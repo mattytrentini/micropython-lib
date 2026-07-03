@@ -18,11 +18,12 @@ Or copy the `aiocan/` directory to your device.
 
 ```python
 import asyncio
+from machine import CAN
 import aiocan
 
 async def main():
-    # Open bus 0 at 500 kbit/s
-    bus = aiocan.Bus(0, bitrate=500_000)
+    # Create a machine.CAN object and wrap it with aiocan.Bus
+    bus = aiocan.Bus(CAN(0, bitrate=500_000))
 
     # Send a raw CAN frame
     await bus.send(0x123, b'\x01\x02\x03')
@@ -50,29 +51,27 @@ asyncio.run(main())
 
 ## API
 
-### `aiocan.Bus(id, bitrate=250_000, mode=None, **kwargs)`
+### `aiocan.Bus(can)`
 
-Create and initialise a CAN bus. `mode` defaults to `Bus.MODE_NORMAL`.
-`**kwargs` are forwarded to `machine.CAN()` (e.g. `sample_point`, `sjw`).
+Wrap a `machine.CAN`-compatible object with async receive dispatching.
+`can` must already be constructed and configured (bitrate, mode, etc.) before
+being passed in. Any `machine.CAN`-like object is accepted — useful for
+passing mock objects in tests.
 
-**Mode constants** (mirrored from `machine.CAN`):
+```python
+from machine import CAN
+import aiocan
 
-| Constant | Description |
-|---|---|
-| `Bus.MODE_NORMAL` | Normal operation |
-| `Bus.MODE_LOOPBACK` | TX frames are received locally (useful for testing) |
-| `Bus.MODE_SILENT` | Listen-only, no ACK transmitted |
-| `Bus.MODE_SILENT_LOOPBACK` | Combined silent + loopback |
+# Normal operation
+bus = aiocan.Bus(CAN(0, bitrate=250_000))
 
-**State constants**:
+# Loopback (no transceiver needed — for testing)
+bus = aiocan.Bus(CAN(0, bitrate=250_000, mode=CAN.MODE_LOOPBACK))
+```
 
-| Constant | Description |
-|---|---|
-| `Bus.STATE_STOPPED` | Controller stopped |
-| `Bus.STATE_ACTIVE` | Error-active (normal) |
-| `Bus.STATE_WARNING` | Error count above warning threshold |
-| `Bus.STATE_PASSIVE` | Error-passive |
-| `Bus.STATE_BUS_OFF` | Bus-off; call `await bus.restart()` to recover |
+Mode and state constants come from `machine.CAN` directly (e.g.
+`CAN.MODE_LOOPBACK`, `CAN.STATE_ACTIVE`). `aiocan.Bus` does not re-export
+them.
 
 ---
 
