@@ -2,7 +2,6 @@
 # MIT license; Copyright (c) 2026 Matt Trentini
 
 import asyncio
-from machine import CAN
 
 
 log_level: int = 1
@@ -36,19 +35,12 @@ class TxError(CanError):
 
 
 class Message:
-    def __init__(self, id: int, data: bytes, flags: int = 0, error_flags: int = 0) -> None:
+    def __init__(self, id: int, data: bytes, rtr: bool = False, extid: bool = False, error_flags: int = 0) -> None:
         self.id: int = id
         self.data: bytes = data
-        self.flags: int = flags
+        self.rtr: bool = rtr
+        self.extid: bool = extid
         self.error_flags: int = error_flags
-
-    @property
-    def rtr(self) -> bool:
-        return bool(self.flags & CAN.FLAG_RTR)
-
-    @property
-    def extid(self) -> bool:
-        return bool(self.flags & CAN.FLAG_EXT_ID)
 
     def __repr__(self) -> str:
         return "Message(id=0x{:03X}, data={}, rtr={})".format(
@@ -95,42 +87,36 @@ class _Subscription:
 
 
 class Bus:
-    """Async wrapper around machine.CAN.
+    """Async CAN bus wrapper.
+
+    Accepts any CAN-like object that implements the expected interface:
+    irq(), send(), recv(), state(), set_filters(), get_counters(),
+    restart(), deinit(), plus class attributes IRQ_RX, IRQ_STATE,
+    FLAG_RTR, FLAG_EXT_ID.
 
     Usage::
 
-        bus = aiocan.Bus(0, bitrate=500_000)
+        from machine import CAN
+        can = CAN(0, bitrate=500_000)
+        bus = aiocan.Bus(can)
         msg = await bus.recv(0x581, timeout_ms=300)
         await bus.send(0x601, b'\\x40\\x00\\x10\\x00\\x00\\x00\\x00\\x00')
         await bus.deinit()
     """
 
-    STATE_STOPPED = CAN.STATE_STOPPED
-    STATE_ACTIVE = CAN.STATE_ACTIVE
-    STATE_WARNING = CAN.STATE_WARNING
-    STATE_PASSIVE = CAN.STATE_PASSIVE
-    STATE_BUS_OFF = CAN.STATE_BUS_OFF
-
-    MODE_NORMAL = CAN.MODE_NORMAL
-    MODE_LOOPBACK = CAN.MODE_LOOPBACK
-    MODE_SILENT = CAN.MODE_SILENT
-    MODE_SILENT_LOOPBACK = CAN.MODE_SILENT_LOOPBACK
-
-    def __init__(self, id: int, bitrate: int = 250_000, mode: int | None = None, **kwargs) -> None:
-        if mode is None:
-            mode = CAN.MODE_NORMAL
-        self._can: CAN = CAN(id, bitrate, mode=mode, **kwargs)
+    def __init__(self, can) -> None:
+        self._can = can
         self._rx_flag: asyncio.ThreadSafeFlag = asyncio.ThreadSafeFlag()
         self._state_flag: asyncio.ThreadSafeFlag = asyncio.ThreadSafeFlag()
         self._subscribers: dict[int, list[asyncio.Queue]] = {}
-        self._can.irq(CAN.IRQ_RX | CAN.IRQ_STATE, self._irq)
+        self._can.irq(self._can.IRQ_RX | self._can.IRQ_STATE, self._irq)
         self._recv_task: asyncio.Task = asyncio.create_task(self._run())
 
-    def _irq(self, can: CAN, event: int) -> None:
+    def _irq(self, can, event: int) -> None:
         # Called from IRQ context — must not allocate.
-        if event & CAN.IRQ_RX:
+        if event & self._can.IRQ_RX:
             self._rx_flag.set()
-        if event & CAN.IRQ_STATE:
+        if event & self._can.IRQ_STATE:
             self._state_flag.set()
 
     async def _run(self) -> None:
@@ -141,7 +127,13 @@ class Bus:
                 if frame is None:
                     break
                 id, data, flags, error_flags = frame
-                msg = Message(id, bytes(data), flags, error_flags)
+                msg = Message(
+                    id,
+                    bytes(data),
+                    rtr=bool(flags & self._can.FLAG_RTR),
+                    extid=bool(flags & self._can.FLAG_EXT_ID),
+                    error_flags=error_flags,
+                )
                 self._dispatch(msg)
 
     def _dispatch(self, msg: Message) -> None:

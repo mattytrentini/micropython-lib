@@ -7,6 +7,7 @@
 #   import loopback_test
 
 import asyncio
+from machine import CAN
 import aiocan
 
 BUS_ID = 0
@@ -149,7 +150,7 @@ async def test_periodic_update(bus):
 async def test_state(bus):
     """bus.state() returns STATE_ACTIVE (or WARNING) in loopback mode."""
     s = bus.state()
-    assert s in (aiocan.Bus.STATE_ACTIVE, aiocan.Bus.STATE_WARNING), (
+    assert s in (CAN.STATE_ACTIVE, CAN.STATE_WARNING), (
         "unexpected state: {}".format(s)
     )
     _ok("bus state")
@@ -159,7 +160,8 @@ async def run_all():
     print("aiocan loopback test (bus={}, bitrate={})".format(BUS_ID, BITRATE))
     print()
 
-    bus = aiocan.Bus(BUS_ID, bitrate=BITRATE, mode=aiocan.Bus.MODE_LOOPBACK)
+    can = CAN(BUS_ID, BITRATE, mode=CAN.MODE_LOOPBACK)
+    bus = aiocan.Bus(can)
 
     tests = [
         test_basic_send_recv,
