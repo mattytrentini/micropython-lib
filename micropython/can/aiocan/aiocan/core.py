@@ -3,6 +3,8 @@
 
 import asyncio
 
+from aioqueue import Queue
+
 
 log_level: int = 1
 
@@ -106,9 +108,9 @@ class _Subscription:
             # dict.fromkeys() dedupes while preserving order, so a queue
             # isn't registered (and delivered to) twice for the same ID.
             self._can_ids = tuple(dict.fromkeys(can_id))
-        self._queue: asyncio.Queue = asyncio.Queue(maxsize)
+        self._queue: Queue = Queue(maxsize)
 
-    async def __aenter__(self) -> asyncio.Queue:
+    async def __aenter__(self) -> Queue:
         if self._can_ids is None:
             self._bus._wildcard_subscribers.append(self._queue)
         else:
@@ -154,8 +156,8 @@ class Bus:
         self._can = can
         self._rx_flag: asyncio.ThreadSafeFlag = asyncio.ThreadSafeFlag()
         self._state_flag: asyncio.ThreadSafeFlag = asyncio.ThreadSafeFlag()
-        self._subscribers: dict[int, list[asyncio.Queue]] = {}
-        self._wildcard_subscribers: list[asyncio.Queue] = []
+        self._subscribers: dict[int, list[Queue]] = {}
+        self._wildcard_subscribers: list[Queue] = []
         # Mirror the state constants onto the instance so callers can write
         # bus.STATE_BUS_OFF instead of reaching back into the wrapped can
         # object; sourced from `can` rather than hardcoded in case a port's
@@ -199,7 +201,7 @@ class Bus:
             self._enqueue(q, msg)
 
     @staticmethod
-    def _enqueue(q: asyncio.Queue, msg: Message) -> None:
+    def _enqueue(q: Queue, msg: Message) -> None:
         try:
             q.put_nowait(msg)
         except Exception:

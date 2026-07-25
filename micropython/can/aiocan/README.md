@@ -12,7 +12,9 @@ import mip
 mip.install("github:micropython/micropython-lib/micropython/can/aiocan")
 ```
 
-Or copy the `aiocan/` directory to your device.
+Or copy the `aiocan/` directory to your device. `mip install`/the manifest
+also pulls in [`aioqueue`](../../aioqueue/) (see
+[Dependencies](#dependencies)).
 
 ## Quick start
 
@@ -109,8 +111,9 @@ Raises `CanTimeoutError` if `timeout_ms` elapses without a matching frame.
 
 #### `bus.subscribe(can_id, maxsize=4)`
 
-Async context manager that yields an `asyncio.Queue` pre-filled as matching
-frames arrive. Frames are dropped (with a warning) if the queue is full.
+Async context manager that yields an `aioqueue.Queue` (see
+[Dependencies](#dependencies)) pre-filled as matching frames arrive. Frames
+are dropped (with a warning) if the queue is full.
 
 ```python
 async with bus.subscribe(0x181) as q:
@@ -132,7 +135,7 @@ copy of every matching frame.
 
 #### `bus.subscribe_all(maxsize=4)`
 
-Async context manager that yields an `asyncio.Queue` receiving every frame on
+Async context manager that yields an `aioqueue.Queue` receiving every frame on
 the bus, regardless of arbitration ID. Behaves like `subscribe()` in all
 other respects (dropped frames on overflow, multiple subscribers allowed) and
 can be used alongside ID-specific subscriptions — both receive a copy of any
@@ -265,6 +268,24 @@ package namespace at import time, not a live reference:
 | `3` | + info messages |
 
 ---
+
+## Dependencies
+
+`subscribe()`/`subscribe_all()`/`recv()` are backed by
+[`aioqueue.Queue`](../../aioqueue/), a small CPython-`asyncio.Queue`-compatible
+implementation. It's a separate micropython-lib package (pulled in via
+`require("aioqueue")` in `manifest.py`) because core MicroPython's `asyncio`
+doesn't have a `Queue` yet — see
+[micropython/micropython#5828](https://github.com/micropython/micropython/issues/5828)
+and the in-progress
+[micropython/micropython#19459](https://github.com/micropython/micropython/pull/19459),
+which would add one to core.
+
+Once #19459 (or equivalent) lands in a MicroPython release, aiocan should
+switch to `asyncio.Queue` directly and drop the `aioqueue` dependency — the
+two implementations are API-compatible for everything aiocan uses
+(`put_nowait()`, `get()`, `empty()`), so that's expected to be a small change
+localised to `core.py` and `manifest.py`.
 
 ## Notes
 
