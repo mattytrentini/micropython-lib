@@ -81,23 +81,29 @@ bus = aiocan.Bus(CAN(0, bitrate=250_000))
 bus = aiocan.Bus(CAN(0, bitrate=250_000, mode=CAN.MODE_LOOPBACK))
 ```
 
-Mode and state constants come from `machine.CAN` directly (e.g.
-`CAN.MODE_LOOPBACK`, `CAN.STATE_ACTIVE`). `aiocan.Bus` does not re-export
-them.
+Mode constants come from `machine.CAN` directly (e.g. `CAN.MODE_LOOPBACK`),
+since they're only needed when constructing the `machine.CAN` object itself.
+State constants are mirrored onto the `Bus` instance at construction time
+(e.g. `bus.STATE_ACTIVE`, `bus.STATE_BUS_OFF`) for convenience.
+
+`Bus` must be constructed from within a running asyncio event loop — it
+starts a background receive task immediately — typically as the first thing
+done inside the `async def main()` passed to `asyncio.run()`.
 
 ---
 
-#### `await bus.send(id, data, flags=0)`
+#### `await bus.send(can_id, data, flags=0)`
 
 Send a CAN frame. `flags` may include `machine.CAN.FLAG_RTR` and/or
-`machine.CAN.FLAG_EXT_ID`. Raises `TxError` if the hardware TX queue is full.
+`machine.CAN.FLAG_EXT_ID`. Raises `BusOffError` if the controller is in the
+`BUS_OFF` state, or `TxError` if the hardware TX queue is full.
 
 ---
 
 #### `await bus.recv(can_id, timeout_ms=None)`
 
 Wait for a single frame with the given arbitration ID. Returns a `Message`.
-Raises `CanError` if `timeout_ms` elapses without a matching frame.
+Raises `CanTimeoutError` if `timeout_ms` elapses without a matching frame.
 
 ---
 
@@ -147,7 +153,7 @@ Start transmitting `data` on `can_id` every `period_ms` milliseconds.
 
 #### `bus.state()` → `int`
 
-Return the current bus state (one of the `Bus.STATE_*` constants).
+Return the current bus state (one of the `bus.STATE_*` constants).
 
 ---
 
@@ -157,7 +163,7 @@ Suspend until the bus state changes, then return the new state.
 
 ```python
 state = await bus.wait_state_change()
-if state == aiocan.Bus.STATE_BUS_OFF:
+if state == bus.STATE_BUS_OFF:
     await bus.restart()
 ```
 
@@ -173,6 +179,10 @@ the controller before reaching the CPU.
 | `None` | Accept all (default) |
 | `[]` | Reject all |
 | `[(id, mask, flags), ...]` | Accept frames where `frame_id & mask == id & mask` |
+
+Filters are applied before subscription matching: a frame that a filter
+rejects never reaches the controller, so an active `subscribe()` /
+`subscribe_all()` for that ID will silently see nothing.
 
 ---
 
@@ -203,7 +213,6 @@ Received frames are returned as `Message` objects.
 |---|---|---|
 | `id` | `int` | Arbitration ID |
 | `data` | `bytes` | Payload (0–8 bytes) |
-| `flags` | `int` | Raw flags from `machine.CAN.recv()` |
 | `error_flags` | `int` | Error flags (`RECV_ERR_FULL`, `RECV_ERR_OVERRUN`) |
 | `rtr` | `bool` | Remote transmission request frame |
 | `extid` | `bool` | 29-bit extended ID frame |
@@ -212,7 +221,9 @@ Received frames are returned as `Message` objects.
 
 ### `aiocan.PeriodicTask`
 
-Returned by `bus.send_periodic()`.
+Returned by `bus.send_periodic()`. Its `can_id`, `period_ms` and `flags`
+attributes are public and safe to change directly between cycles — the
+transmit loop re-reads them each time.
 
 #### `task.update(data)`
 
@@ -231,22 +242,27 @@ Stop the periodic transmission.
 | Exception | Description |
 |---|---|
 | `CanError` | Base class for aiocan errors |
-| `BusOffError` | Raised when the bus enters the BUS_OFF state |
+| `BusOffError` | Raised by `send()` when the controller is in the BUS_OFF state |
 | `TxError` | TX queue was full when `send()` was called |
+| `CanTimeoutError` | `recv()` timed out without a matching frame |
 
-`asyncio.TimeoutError` is re-raised as `CanError` by `recv()`.
+`CanTimeoutError` is a subclass of `CanError`, so `except CanError` still
+catches it.
 
 ---
 
 ## Logging
 
-Set `aiocan.log_level` to control verbosity:
+Call `aiocan.set_log_level(n)` to control verbosity — assigning directly to
+`aiocan.log_level` has no effect, since it's a plain int copied into the
+package namespace at import time, not a live reference:
 
 | Value | Output |
 |---|---|
-| `0` | Errors only |
-| `1` | Errors + warnings (default) |
-| `2` | + info messages |
+| `0` | Silent |
+| `1` | Errors only (default) |
+| `2` | Errors + warnings |
+| `3` | + info messages |
 
 ---
 

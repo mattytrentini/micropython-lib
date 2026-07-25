@@ -39,12 +39,14 @@ async def test_basic_send_recv(bus):
 
 
 async def test_recv_timeout(bus):
-    """recv() raises CanError when no matching frame arrives in time."""
+    """recv() raises CanTimeoutError (a CanError) when nothing arrives in time."""
     try:
         await bus.recv(0x7FF, timeout_ms=100)
         _fail("recv timeout", "no exception raised")
-    except aiocan.CanError:
+    except aiocan.CanTimeoutError:
         _ok("recv timeout")
+    except aiocan.CanError as e:
+        _fail("recv timeout", "raised {} instead of CanTimeoutError".format(type(e).__name__))
 
 
 async def test_subscribe_single(bus):
@@ -123,6 +125,17 @@ async def test_subscribe_all_and_single_coexist(bus):
     _ok("subscribe_all coexists with subscribe")
 
 
+async def test_subscribe_dedup(bus):
+    """Duplicate IDs in subscribe() don't deliver the same frame twice."""
+    async with bus.subscribe([0x240, 0x240]) as q:
+        await bus.send(0x240, b'\x01')
+        await asyncio.sleep_ms(20)
+        m = await q.get()
+        assert m.id == 0x240 and m.data == b'\x01', "expected frame"
+        assert q.empty(), "duplicate ID delivered the frame twice"
+    _ok("subscribe dedups repeated IDs")
+
+
 async def test_message_properties(bus):
     """Message.id, .data, .rtr and .extid are populated correctly."""
     await bus.send(0x555, b'\x00\x01\x02\x03\x04\x05\x06\x07')
@@ -195,6 +208,22 @@ async def test_state(bus):
     _ok("bus state")
 
 
+async def test_state_constants_mirrored(bus):
+    """Bus mirrors machine.CAN's STATE_* constants onto the instance."""
+    for name in ("STATE_STOPPED", "STATE_ACTIVE", "STATE_WARNING", "STATE_PASSIVE", "STATE_BUS_OFF"):
+        assert getattr(bus, name) == getattr(CAN, name), "{} mismatch".format(name)
+    _ok("bus STATE_* constants mirrored")
+
+
+async def test_message_repr(bus):
+    """Message.__repr__ formats extended IDs at full width and shows extid."""
+    std = aiocan.Message(0x123, b'\x01', extid=False)
+    ext = aiocan.Message(0x1ABCDEF0, b'\x01', extid=True)
+    assert "0x123" in repr(std) and "extid=False" in repr(std), repr(std)
+    assert "0x1ABCDEF0" in repr(ext) and "extid=True" in repr(ext), repr(ext)
+    _ok("message repr")
+
+
 async def run_all():
     print("aiocan loopback test (bus={}, bitrate={})".format(BUS_ID, BITRATE))
     print()
@@ -211,11 +240,14 @@ async def run_all():
         test_subscribe_multi_id,
         test_subscribe_all,
         test_subscribe_all_and_single_coexist,
+        test_subscribe_dedup,
         test_message_properties,
+        test_message_repr,
         test_empty_payload,
         test_periodic_task,
         test_periodic_update,
         test_state,
+        test_state_constants_mirrored,
     ]
 
     for t in tests:

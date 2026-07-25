@@ -167,7 +167,7 @@ asyncio.run(main())
 | Bus setup | `can.Bus(interface=..., channel=...)` constructs everything | External CAN object passed in |
 | Notifier | Explicit `can.Notifier(bus, listeners, loop=...)` required | Built into `Bus`, no setup needed |
 | Receive | One `AsyncBufferedReader` gets all frames; caller filters by ID | `recv(id)` or `subscribe(id)` — filtering is built in |
-| Send | Construct `can.Message(arbitration_id=..., data=...)` | `await bus.send(id, data)` |
+| Send | Construct `can.Message(arbitration_id=..., data=...)` | `await bus.send(can_id, data)` |
 | Periodic update | Stop task, rebuild `Message`, restart | `task.update(data)` in-place |
 | Period units | Seconds (`period=1.0`) | Milliseconds (`period_ms=1000`) |
 | Thread model | One background thread per bus | No threads — pure asyncio |

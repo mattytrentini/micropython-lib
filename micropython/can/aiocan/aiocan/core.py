@@ -7,6 +7,18 @@ import asyncio
 log_level: int = 1
 
 
+def set_log_level(level: int) -> None:
+    """Set the module logging verbosity (see README for the level table).
+
+    Reassigning aiocan.log_level directly has no effect — it's imported by
+    value into the package namespace, so the module-level check inside
+    log_error()/log_warn()/log_info() never sees the change. Use this
+    function instead.
+    """
+    global log_level
+    log_level = level
+
+
 def log_error(*args) -> None:
     if log_level > 0:
         print("[aiocan] E:", *args)
@@ -34,21 +46,34 @@ class TxError(CanError):
     pass
 
 
+class CanTimeoutError(CanError):
+    pass
+
+
 class Message:
-    def __init__(self, id: int, data: bytes, rtr: bool = False, extid: bool = False, error_flags: int = 0) -> None:
-        self.id: int = id
+    def __init__(self, can_id: int, data: bytes, rtr: bool = False, extid: bool = False, error_flags: int = 0) -> None:
+        self.id: int = can_id
         self.data: bytes = data
         self.rtr: bool = rtr
         self.extid: bool = extid
         self.error_flags: int = error_flags
 
     def __repr__(self) -> str:
-        return "Message(id=0x{:03X}, data={}, rtr={})".format(
-            self.id, self.data, self.rtr
+        width = 8 if self.extid else 3
+        return "Message(id=0x{:0{}X}, data={}, rtr={}, extid={})".format(
+            self.id, width, self.data, self.rtr, self.extid
         )
 
 
 class PeriodicTask:
+    """Handle returned by Bus.send_periodic().
+
+    can_id, period_ms and flags are public and safe to mutate directly
+    between cycles (the transmit loop re-reads them each time); use
+    update() to change the payload instead, since it avoids reallocating
+    the backing bytearray when the length is unchanged.
+    """
+
     def __init__(self, can_id: int, period_ms: int, flags: int) -> None:
         self.can_id: int = can_id
         self.period_ms: int = period_ms
@@ -78,7 +103,9 @@ class _Subscription:
         elif isinstance(can_id, int):
             self._can_ids = (can_id,)
         else:
-            self._can_ids = tuple(can_id)
+            # dict.fromkeys() dedupes while preserving order, so a queue
+            # isn't registered (and delivered to) twice for the same ID.
+            self._can_ids = tuple(dict.fromkeys(can_id))
         self._queue: asyncio.Queue = asyncio.Queue(maxsize)
 
     async def __aenter__(self) -> asyncio.Queue:
@@ -109,6 +136,10 @@ class Bus:
     restart(), deinit(), plus class attributes IRQ_RX, IRQ_STATE,
     FLAG_RTR, FLAG_EXT_ID.
 
+    Must be constructed from within a running asyncio event loop (it starts
+    a background receive task immediately) — typically the first thing done
+    inside an `async def main()` passed to `asyncio.run()`.
+
     Usage::
 
         from machine import CAN
@@ -125,15 +156,24 @@ class Bus:
         self._state_flag: asyncio.ThreadSafeFlag = asyncio.ThreadSafeFlag()
         self._subscribers: dict[int, list[asyncio.Queue]] = {}
         self._wildcard_subscribers: list[asyncio.Queue] = []
-        self._can.irq(self._can.IRQ_RX | self._can.IRQ_STATE, self._irq)
+        # Mirror the state constants onto the instance so callers can write
+        # bus.STATE_BUS_OFF instead of reaching back into the wrapped can
+        # object; sourced from `can` rather than hardcoded in case a port's
+        # values ever differ.
+        for name in ("STATE_STOPPED", "STATE_ACTIVE", "STATE_WARNING", "STATE_PASSIVE", "STATE_BUS_OFF"):
+            setattr(self, name, getattr(can, name))
+        self._can.irq(self._irq, self._can.IRQ_RX | self._can.IRQ_STATE)
         self._recv_task: asyncio.Task = asyncio.create_task(self._run())
 
-    def _irq(self, can, event: int) -> None:
-        # Called from IRQ context — must not allocate.
-        if event & self._can.IRQ_RX:
-            self._rx_flag.set()
-        if event & self._can.IRQ_STATE:
-            self._state_flag.set()
+    def _irq(self, can) -> None:
+        # Called from IRQ context. The trigger reason isn't passed as an
+        # argument -- retrieve it via can.irq().flags(). Per machine.CAN
+        # docs, a handler should call flags() repeatedly until it returns 0.
+        while event := can.irq().flags():
+            if event & self._can.IRQ_RX:
+                self._rx_flag.set()
+            if event & self._can.IRQ_STATE:
+                self._state_flag.set()
 
     async def _run(self) -> None:
         while True:
@@ -165,11 +205,17 @@ class Bus:
         except Exception:
             log_warn("Queue full, dropping 0x{:03X}".format(msg.id))
 
-    async def send(self, id: int, data: bytes | bytearray, flags: int = 0) -> int:
-        """Send a CAN message. Raises TxError if the TX queue is full."""
-        result = self._can.send(id, data, flags=flags)
+    async def send(self, can_id: int, data: bytes | bytearray, flags: int = 0) -> int:
+        """Send a CAN message.
+
+        Raises BusOffError if the controller is in the BUS_OFF state, or
+        TxError if the TX queue is full.
+        """
+        if self.state() == self.STATE_BUS_OFF:
+            raise BusOffError("Cannot send while BUS_OFF (id=0x{:03X})".format(can_id))
+        result = self._can.send(can_id, data, flags=flags)
         if result is None:
-            raise TxError("TX queue full (id=0x{:03X})".format(id))
+            raise TxError("TX queue full (id=0x{:03X})".format(can_id))
         return result
 
     def subscribe(
@@ -215,7 +261,7 @@ class Bus:
             try:
                 return await asyncio.wait_for(q.get(), timeout_ms / 1000)
             except asyncio.TimeoutError:
-                raise CanError("Timeout waiting for 0x{:03X}".format(can_id))
+                raise CanTimeoutError("Timeout waiting for 0x{:03X}".format(can_id))
 
     def send_periodic(
         self, can_id: int, data: bytes | bytearray, period_ms: int, flags: int = 0
@@ -239,7 +285,7 @@ class Bus:
             await asyncio.sleep_ms(pt.period_ms)
 
     def state(self) -> int:
-        """Return the current bus state (one of the Bus.STATE_* constants)."""
+        """Return the current bus state (one of the bus.STATE_* constants)."""
         return self._can.state()
 
     async def wait_state_change(self) -> int:
@@ -253,6 +299,10 @@ class Bus:
         - None                      : accept all messages (default)
         - []                        : reject all messages
         - [(id, mask, flags), ...]  : accept messages matching any entry
+
+        Filters are applied before subscription matching: a frame that a
+        filter rejects never reaches the controller, so an active
+        subscribe()/subscribe_all() for that ID will silently see nothing.
         """
         self._can.set_filters(filters)
 

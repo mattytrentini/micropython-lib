@@ -57,6 +57,7 @@ class MockCAN:
         self._loopback = loopback
         self._handler = None
         self._trigger = 0
+        self._pending_flags = 0
         self._rx_queue = []
         self._state = self.STATE_ACTIVE
         self._filters = None    # None = accept all
@@ -69,9 +70,23 @@ class MockCAN:
     # aiocan.Bus interface                                                 #
     # ------------------------------------------------------------------ #
 
-    def irq(self, trigger: int, handler, hard: bool = False) -> None:
-        self._trigger = trigger
-        self._handler = handler
+    def irq(self, handler=None, trigger: int = 0, hard: bool = False) -> "MockCAN":
+        """Match machine.CAN.irq(handler=None, trigger=0, hard=False).
+
+        Returns self, acting as its own "irq object": can.irq().flags()
+        returns and clears the flags pending since the last call, mirroring
+        the query-after-the-fact convention documented for machine.CAN.
+        """
+        if handler is not None:
+            self._trigger = trigger
+            self._handler = handler
+        return self
+
+    def flags(self) -> int:
+        """Return trigger flags pending since the last call, then clear them."""
+        f = self._pending_flags
+        self._pending_flags = 0
+        return f
 
     def send(self, id: int, data: bytes | bytearray, flags: int = 0) -> int | None:
         """Record the frame and, in loopback mode, inject it into the rx path."""
@@ -135,7 +150,8 @@ class MockCAN:
 
     def _notify(self, event: int) -> None:
         if self._handler and (self._trigger & event):
-            self._handler(self, event)
+            self._pending_flags |= event
+            self._handler(self)
 
     def _passes_filter(self, id: int, flags: int) -> bool:
         if self._filters is None:
