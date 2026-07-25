@@ -56,6 +56,7 @@ function ci_package_tests_setup_lib {
 function ci_package_tests_run {
     export MICROPYPATH
     for test in \
+        micropython/aioqueue/test_queue.py \
         micropython/drivers/storage/sdcard/sdtest.py \
         micropython/xmltok/test_xmltok.py \
         python-ecosys/requests/test_requests.py \
