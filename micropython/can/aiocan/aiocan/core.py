@@ -71,19 +71,34 @@ class PeriodicTask:
 
 
 class _Subscription:
-    def __init__(self, bus: Bus, can_id: int, maxsize: int = 4) -> None:
+    def __init__(self, bus: "Bus", can_id: int | list[int] | tuple[int, ...] | None, maxsize: int = 4) -> None:
         self._bus: Bus = bus
-        self._can_id: int = can_id
+        if can_id is None:
+            self._can_ids: tuple[int, ...] | None = None
+        elif isinstance(can_id, int):
+            self._can_ids = (can_id,)
+        else:
+            self._can_ids = tuple(can_id)
         self._queue: asyncio.Queue = asyncio.Queue(maxsize)
 
     async def __aenter__(self) -> asyncio.Queue:
-        self._bus._subscribers.setdefault(self._can_id, []).append(self._queue)
+        if self._can_ids is None:
+            self._bus._wildcard_subscribers.append(self._queue)
+        else:
+            for can_id in self._can_ids:
+                self._bus._subscribers.setdefault(can_id, []).append(self._queue)
         return self._queue
 
     async def __aexit__(self, *_) -> None:
-        subs = self._bus._subscribers.get(self._can_id, [])
-        if self._queue in subs:
-            subs.remove(self._queue)
+        if self._can_ids is None:
+            subs = self._bus._wildcard_subscribers
+            if self._queue in subs:
+                subs.remove(self._queue)
+        else:
+            for can_id in self._can_ids:
+                subs = self._bus._subscribers.get(can_id, [])
+                if self._queue in subs:
+                    subs.remove(self._queue)
 
 
 class Bus:
@@ -109,6 +124,7 @@ class Bus:
         self._rx_flag: asyncio.ThreadSafeFlag = asyncio.ThreadSafeFlag()
         self._state_flag: asyncio.ThreadSafeFlag = asyncio.ThreadSafeFlag()
         self._subscribers: dict[int, list[asyncio.Queue]] = {}
+        self._wildcard_subscribers: list[asyncio.Queue] = []
         self._can.irq(self._can.IRQ_RX | self._can.IRQ_STATE, self._irq)
         self._recv_task: asyncio.Task = asyncio.create_task(self._run())
 
@@ -138,10 +154,16 @@ class Bus:
 
     def _dispatch(self, msg: Message) -> None:
         for q in self._subscribers.get(msg.id, ()):
-            try:
-                q.put_nowait(msg)
-            except Exception:
-                log_warn("Queue full, dropping 0x{:03X}".format(msg.id))
+            self._enqueue(q, msg)
+        for q in self._wildcard_subscribers:
+            self._enqueue(q, msg)
+
+    @staticmethod
+    def _enqueue(q: asyncio.Queue, msg: Message) -> None:
+        try:
+            q.put_nowait(msg)
+        except Exception:
+            log_warn("Queue full, dropping 0x{:03X}".format(msg.id))
 
     async def send(self, id: int, data: bytes | bytearray, flags: int = 0) -> int:
         """Send a CAN message. Raises TxError if the TX queue is full."""
@@ -150,8 +172,13 @@ class Bus:
             raise TxError("TX queue full (id=0x{:03X})".format(id))
         return result
 
-    def subscribe(self, can_id: int, maxsize: int = 4) -> _Subscription:
-        """Async context manager yielding a Queue for the given CAN ID.
+    def subscribe(
+        self, can_id: int | list[int] | tuple[int, ...], maxsize: int = 4
+    ) -> _Subscription:
+        """Async context manager yielding a Queue for the given CAN ID(s).
+
+        ``can_id`` may be a single ID or a list/tuple of IDs — frames
+        matching any of them are delivered to the same queue.
 
         Usage::
 
@@ -159,8 +186,26 @@ class Bus:
                 while True:
                     msg = await q.get()
                     process(msg)
+
+            async with bus.subscribe([0x181, 0x182, 0x183]) as q:
+                while True:
+                    msg = await q.get()
+                    process(msg)
         """
         return _Subscription(self, can_id, maxsize)
+
+    def subscribe_all(self, maxsize: int = 4) -> _Subscription:
+        """Async context manager yielding a Queue that receives every frame,
+        regardless of arbitration ID.
+
+        Usage::
+
+            async with bus.subscribe_all() as q:
+                while True:
+                    msg = await q.get()
+                    process(msg)
+        """
+        return _Subscription(self, None, maxsize)
 
     async def recv(self, can_id: int, timeout_ms: int | None = None) -> Message:
         """Receive a single message matching can_id, optionally with timeout."""

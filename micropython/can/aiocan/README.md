@@ -38,6 +38,18 @@ async def main():
             msg = await q.get()
             print(msg)
 
+    # Subscribe to several IDs on one queue
+    async with bus.subscribe([0x181, 0x182, 0x183]) as q:
+        for _ in range(10):
+            msg = await q.get()
+            print(msg)
+
+    # Subscribe to every frame on the bus
+    async with bus.subscribe_all() as q:
+        for _ in range(10):
+            msg = await q.get()
+            print(msg)
+
     # Periodic transmit — returns a handle to update or cancel
     heartbeat = bus.send_periodic(0x700 | 0x01, b'\x05', period_ms=1000)
     await asyncio.sleep(5)
@@ -99,8 +111,31 @@ async with bus.subscribe(0x181) as q:
     msg = await q.get()
 ```
 
+`can_id` may also be a list or tuple of IDs, in which case frames matching
+any of them are delivered to the same queue:
+
+```python
+async with bus.subscribe([0x181, 0x182, 0x183]) as q:
+    msg = await q.get()
+```
+
 Multiple subscribers for the same `can_id` are supported; each receives a
 copy of every matching frame.
+
+---
+
+#### `bus.subscribe_all(maxsize=4)`
+
+Async context manager that yields an `asyncio.Queue` receiving every frame on
+the bus, regardless of arbitration ID. Behaves like `subscribe()` in all
+other respects (dropped frames on overflow, multiple subscribers allowed) and
+can be used alongside ID-specific subscriptions — both receive a copy of any
+matching frame.
+
+```python
+async with bus.subscribe_all() as q:
+    msg = await q.get()
+```
 
 ---
 

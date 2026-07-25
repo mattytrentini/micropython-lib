@@ -84,6 +84,45 @@ async def test_subscribe_no_crosstalk(bus):
     _ok("subscribe no crosstalk")
 
 
+async def test_subscribe_multi_id(bus):
+    """subscribe() accepts a list of IDs; only those IDs are queued."""
+    async with bus.subscribe([0x210, 0x211]) as q:
+        await bus.send(0x210, b'\x01')
+        await bus.send(0x211, b'\x02')
+        await bus.send(0x212, b'\x03')  # not subscribed — should be dropped
+        await asyncio.sleep_ms(20)
+        m1 = await q.get()
+        m2 = await q.get()
+        assert m1.id == 0x210 and m1.data == b'\x01', "first frame"
+        assert m2.id == 0x211 and m2.data == b'\x02', "second frame"
+        assert q.empty(), "unsubscribed ID should not be queued"
+    _ok("subscribe multi-id")
+
+
+async def test_subscribe_all(bus):
+    """subscribe_all() receives frames for every arbitration ID."""
+    async with bus.subscribe_all() as q:
+        await bus.send(0x220, b'\xAA')
+        await bus.send(0x221, b'\xBB')
+        await asyncio.sleep_ms(20)
+        m1 = await q.get()
+        m2 = await q.get()
+        assert m1.id == 0x220, "first frame id"
+        assert m2.id == 0x221, "second frame id"
+    _ok("subscribe_all")
+
+
+async def test_subscribe_all_and_single_coexist(bus):
+    """A subscribe_all() queue and a single-ID subscribe() both see a frame."""
+    async with bus.subscribe(0x230) as q_single:
+        async with bus.subscribe_all() as q_all:
+            await bus.send(0x230, b'\x0A')
+            await asyncio.sleep_ms(20)
+            assert (await q_single.get()).id == 0x230, "single subscriber"
+            assert (await q_all.get()).id == 0x230, "wildcard subscriber"
+    _ok("subscribe_all coexists with subscribe")
+
+
 async def test_message_properties(bus):
     """Message.id, .data, .rtr and .extid are populated correctly."""
     await bus.send(0x555, b'\x00\x01\x02\x03\x04\x05\x06\x07')
@@ -169,6 +208,9 @@ async def run_all():
         test_subscribe_single,
         test_subscribe_multiple,
         test_subscribe_no_crosstalk,
+        test_subscribe_multi_id,
+        test_subscribe_all,
+        test_subscribe_all_and_single_coexist,
         test_message_properties,
         test_empty_payload,
         test_periodic_task,
