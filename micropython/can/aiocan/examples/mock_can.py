@@ -11,6 +11,7 @@
 #
 #   async def test():
 #       can = MockCAN()                         # loopback by default
+#       can.set_filters(None)                   # accept all frames
 #       bus = aiocan.Bus(can)
 #
 #       await bus.send(0x123, b'\x01\x02')      # also injects into rx
@@ -29,21 +30,21 @@
 class MockCAN:
     # Protocol constants. Must be non-overlapping bits within each group
     # so they can be combined with | in irq() trigger masks.
-    IRQ_RX    = 0x01
+    IRQ_RX = 0x01
     IRQ_STATE = 0x02
 
-    FLAG_RTR    = 0x01
+    FLAG_RTR = 0x01
     FLAG_EXT_ID = 0x02
 
     STATE_STOPPED = 0
-    STATE_ACTIVE  = 1
+    STATE_ACTIVE = 1
     STATE_WARNING = 2
     STATE_PASSIVE = 3
     STATE_BUS_OFF = 4
 
-    MODE_NORMAL          = 0
-    MODE_LOOPBACK        = 1
-    MODE_SILENT          = 2
+    MODE_NORMAL = 0
+    MODE_LOOPBACK = 1
+    MODE_SILENT = 2
     MODE_SILENT_LOOPBACK = 3
 
     def __init__(self, loopback: bool = True) -> None:
@@ -60,7 +61,7 @@ class MockCAN:
         self._pending_flags = 0
         self._rx_queue = []
         self._state = self.STATE_ACTIVE
-        self._filters = None    # None = accept all
+        self._filters = []  # machine.CAN defaults to accept-none
 
         # Public log of every frame passed to send(), as (id, data, flags).
         # Tests can inspect or clear this freely.
@@ -122,7 +123,9 @@ class MockCAN:
     # Test helpers                                                         #
     # ------------------------------------------------------------------ #
 
-    def inject(self, id: int, data: bytes | bytearray, flags: int = 0, error_flags: int = 0) -> None:
+    def inject(
+        self, id: int, data: bytes | bytearray, flags: int = 0, error_flags: int = 0
+    ) -> None:
         """Push a frame directly into the receive queue.
 
         Simulates a frame arriving from the bus, independent of send().
@@ -155,9 +158,9 @@ class MockCAN:
 
     def _passes_filter(self, id: int, flags: int) -> bool:
         if self._filters is None:
-            return True     # accept all
+            return True  # accept all
         if not self._filters:
-            return False    # reject all
+            return False  # reject all
         for f_id, f_mask, f_flags in self._filters:
             if (id & f_mask) == (f_id & f_mask):
                 return True

@@ -3,7 +3,7 @@
 
 import asyncio
 
-from aioqueue import Queue
+from aioqueue import Queue, QueueFull
 
 
 log_level: int = 1
@@ -53,7 +53,14 @@ class CanTimeoutError(CanError):
 
 
 class Message:
-    def __init__(self, can_id: int, data: bytes, rtr: bool = False, extid: bool = False, error_flags: int = 0) -> None:
+    def __init__(
+        self,
+        can_id: int,
+        data: bytes,
+        rtr: bool = False,
+        extid: bool = False,
+        error_flags: int = 0,
+    ) -> None:
         self.id: int = can_id
         self.data: bytes = data
         self.rtr: bool = rtr
@@ -76,7 +83,8 @@ class PeriodicTask:
     the backing bytearray when the length is unchanged.
     """
 
-    def __init__(self, can_id: int, period_ms: int, flags: int) -> None:
+    def __init__(self, bus: "Bus", can_id: int, period_ms: int, flags: int) -> None:
+        self._bus: Bus = bus
         self.can_id: int = can_id
         self.period_ms: int = period_ms
         self.flags: int = flags
@@ -95,10 +103,13 @@ class PeriodicTask:
         if self._task:
             self._task.cancel()
             self._task = None
+        self._bus._periodic_tasks.discard(self)
 
 
 class _Subscription:
-    def __init__(self, bus: "Bus", can_id: int | list[int] | tuple[int, ...] | None, maxsize: int = 4) -> None:
+    def __init__(
+        self, bus: "Bus", can_id: int | list[int] | tuple[int, ...] | None, maxsize: int = 4
+    ) -> None:
         self._bus: Bus = bus
         if can_id is None:
             self._can_ids: tuple[int, ...] | None = None
@@ -128,6 +139,8 @@ class _Subscription:
                 subs = self._bus._subscribers.get(can_id, [])
                 if self._queue in subs:
                     subs.remove(self._queue)
+                if not subs:
+                    self._bus._subscribers.pop(can_id, None)
 
 
 class Bus:
@@ -158,11 +171,19 @@ class Bus:
         self._state_flag: asyncio.ThreadSafeFlag = asyncio.ThreadSafeFlag()
         self._subscribers: dict[int, list[Queue]] = {}
         self._wildcard_subscribers: list[Queue] = []
+        self._periodic_tasks: set[PeriodicTask] = set()
+        self._deinitialized = False
         # Mirror the state constants onto the instance so callers can write
         # bus.STATE_BUS_OFF instead of reaching back into the wrapped can
         # object; sourced from `can` rather than hardcoded in case a port's
         # values ever differ.
-        for name in ("STATE_STOPPED", "STATE_ACTIVE", "STATE_WARNING", "STATE_PASSIVE", "STATE_BUS_OFF"):
+        for name in (
+            "STATE_STOPPED",
+            "STATE_ACTIVE",
+            "STATE_WARNING",
+            "STATE_PASSIVE",
+            "STATE_BUS_OFF",
+        ):
             setattr(self, name, getattr(can, name))
         self._can.irq(self._irq, self._can.IRQ_RX | self._can.IRQ_STATE)
         self._recv_task: asyncio.Task = asyncio.create_task(self._run())
@@ -171,11 +192,18 @@ class Bus:
         # Called from IRQ context. The trigger reason isn't passed as an
         # argument -- retrieve it via can.irq().flags(). Per machine.CAN
         # docs, a handler should call flags() repeatedly until it returns 0.
-        while event := can.irq().flags():
-            if event & self._can.IRQ_RX:
-                self._rx_flag.set()
-            if event & self._can.IRQ_STATE:
-                self._state_flag.set()
+        # RX flags are level-triggered on some ports: flags() keeps returning
+        # IRQ_RX until recv() drains the hardware/software RX queue. That drain
+        # happens in _run(), after this IRQ callback returns. Looping here would
+        # therefore never finish while a frame is queued and prevent the event
+        # loop from ever running _run(). ThreadSafeFlag coalesces repeated RX
+        # notifications, so one flags() read is sufficient to wake the task;
+        # the task drains all queued frames before waiting again.
+        event = can.irq().flags()
+        if event & self._can.IRQ_RX:
+            self._rx_flag.set()
+        if event & self._can.IRQ_STATE:
+            self._state_flag.set()
 
     async def _run(self) -> None:
         while True:
@@ -204,7 +232,7 @@ class Bus:
     def _enqueue(q: Queue, msg: Message) -> None:
         try:
             q.put_nowait(msg)
-        except Exception:
+        except QueueFull:
             log_warn("Queue full, dropping 0x{:03X}".format(msg.id))
 
     async def send(self, can_id: int, data: bytes | bytearray, flags: int = 0) -> int:
@@ -273,9 +301,10 @@ class Bus:
         Returns a PeriodicTask. Call .update(data) to change the payload or
         .cancel() to stop.
         """
-        pt = PeriodicTask(can_id, period_ms, flags)
+        pt = PeriodicTask(self, can_id, period_ms, flags)
         pt._data = bytearray(data)
         pt._task = asyncio.create_task(self._periodic(pt))
+        self._periodic_tasks.add(pt)
         return pt
 
     async def _periodic(self, pt: PeriodicTask) -> None:
@@ -327,5 +356,10 @@ class Bus:
 
     async def deinit(self) -> None:
         """Cancel the receive task and deinitialise the CAN controller."""
+        if self._deinitialized:
+            return
+        self._deinitialized = True
         self._recv_task.cancel()
+        for periodic_task in tuple(self._periodic_tasks):
+            periodic_task.cancel()
         self._can.deinit()

@@ -25,7 +25,9 @@ import aiocan
 
 async def main():
     # Create a machine.CAN object and wrap it with aiocan.Bus
-    bus = aiocan.Bus(CAN(0, bitrate=500_000))
+    can = CAN(0, bitrate=500_000)
+    can.set_filters(None)  # machine.CAN defaults to rejecting all frames
+    bus = aiocan.Bus(can)
 
     # Send a raw CAN frame
     await bus.send(0x123, b'\x01\x02\x03')
@@ -63,24 +65,46 @@ async def main():
 asyncio.run(main())
 ```
 
+## Two-board example
+
+[`examples/two_board_ping.py`](examples/two_board_ping.py) exchanges numbered
+ping and pong frames between the LilyGo T-2CAN and a Pyboard v1.1. Copy the
+file to both boards, set `ROLE = "ping"` on one and `ROLE = "echo"` on the
+other, then run both. Each board must have `aiocan` and its `aioqueue`
+dependency installed.
+
+The example uses 500 kbit/s and controller 1 on each board. The T-2CAN uses
+its onboard CAN-B transceiver (GPIO7 TX, GPIO6 RX). On the Pyboard v1.1,
+connect Y4/TX (PB9) to the transceiver TX input and Y3/RX (PB8) to its RX
+output. Connect both transceivers' CANH and CANL lines together, and connect
+the Pyboard transceiver ground to the Pyboard ground. With two 120-ohm
+terminators, resistance across CANH and CANL should be about 60 ohms.
+
 ## API
 
 ### `aiocan.Bus(can)`
 
 Wrap a `machine.CAN`-compatible object with async receive dispatching.
-`can` must already be constructed and configured (bitrate, mode, etc.) before
-being passed in. Any `machine.CAN`-like object is accepted — useful for
+`can` must already be constructed and configured (bitrate, mode and receive
+filters) before being passed in. `Bus` preserves the filter configuration; it
+does not change filters implicitly. `machine.CAN` starts in accept-none mode,
+so call `can.set_filters(None)` to receive all frames, or install filters for
+the IDs you need. Any `machine.CAN`-like object is accepted — useful for
 passing mock objects in tests.
 
 ```python
 from machine import CAN
 import aiocan
 
-# Normal operation
-bus = aiocan.Bus(CAN(0, bitrate=250_000))
+# Normal operation (explicitly accept frames)
+can = CAN(0, bitrate=250_000)
+can.set_filters(None)
+bus = aiocan.Bus(can)
 
-# Loopback (no transceiver needed — for testing)
-bus = aiocan.Bus(CAN(0, bitrate=250_000, mode=CAN.MODE_LOOPBACK))
+# Loopback (receives its own frames; still drives the bus)
+can = CAN(0, bitrate=250_000, mode=CAN.MODE_LOOPBACK)
+can.set_filters(None)
+bus = aiocan.Bus(can)
 ```
 
 Mode constants come from `machine.CAN` directly (e.g. `CAN.MODE_LOOPBACK`),
@@ -179,9 +203,12 @@ the controller before reaching the CPU.
 
 | Value | Effect |
 |---|---|
-| `None` | Accept all (default) |
+| `None` | Accept all |
 | `[]` | Reject all |
 | `[(id, mask, flags), ...]` | Accept frames where `frame_id & mask == id & mask` |
+
+`machine.CAN` starts in accept-none mode. Call `set_filters()` before
+receiving if you want frames delivered.
 
 Filters are applied before subscription matching: a frame that a filter
 rejects never reaches the controller, so an active `subscribe()` /
@@ -236,7 +263,8 @@ a new `bytearray` is allocated.
 
 #### `task.cancel()`
 
-Stop the periodic transmission.
+Stop the periodic transmission. `await bus.deinit()` also cancels all periodic
+tasks started by that bus before deinitialising the CAN controller.
 
 ---
 
