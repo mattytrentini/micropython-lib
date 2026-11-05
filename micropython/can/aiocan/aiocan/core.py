@@ -2,8 +2,7 @@
 # MIT license; Copyright (c) 2026 Matt Trentini
 
 import asyncio
-
-from aioqueue import Queue, QueueFull
+from asyncio import Queue, QueueFull
 
 
 log_level: int = 1

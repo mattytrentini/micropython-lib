@@ -299,21 +299,10 @@ package namespace at import time, not a live reference:
 
 ## Dependencies
 
-`subscribe()`/`subscribe_all()`/`recv()` are backed by
-[`aioqueue.Queue`](../../aioqueue/), a small CPython-`asyncio.Queue`-compatible
-implementation. It's a separate micropython-lib package (pulled in via
-`require("aioqueue")` in `manifest.py`) because core MicroPython's `asyncio`
-doesn't have a `Queue` yet — see
-[micropython/micropython#5828](https://github.com/micropython/micropython/issues/5828)
-and the in-progress
-[micropython/micropython#19459](https://github.com/micropython/micropython/pull/19459),
-which would add one to core.
-
-Once #19459 (or equivalent) lands in a MicroPython release, aiocan should
-switch to `asyncio.Queue` directly and drop the `aioqueue` dependency — the
-two implementations are API-compatible for everything aiocan uses
-(`put_nowait()`, `get()`, `empty()`), so that's expected to be a small change
-localised to `core.py` and `manifest.py`.
+`subscribe()`/`subscribe_all()`/`recv()` use `asyncio.Queue`, which is included
+in MicroPython's `asyncio` package. This requires firmware containing the
+`asyncio.Queue` support added in
+[micropython/micropython#19459](https://github.com/micropython/micropython/pull/19459).
 
 ## Notes
 
